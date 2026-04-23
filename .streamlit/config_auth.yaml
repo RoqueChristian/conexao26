@@ -1,0 +1,12 @@
+credentials:
+  usernames:
+    admin:
+      email: croque@empresa.com
+      name: CRoque
+      password: "$2b$12$OeUIqXbOjG0zlj/A1Ihib.s6kT077Ny8nx4mFOGoIETTk1EdP8IzW"
+cookie:
+  expiry_days: 1
+  key: assinatura_secreta_cookie_123
+  name: command_center_session
+preauthorized:
+  emails: []

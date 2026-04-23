@@ -12,7 +12,6 @@ env/
 # ==============================================================================
 # Arquivos que contêm senhas de banco de dados, hashes de login e cookies.
 .streamlit/secrets.toml
-.streamlit/config_auth.yaml
 .env
 
 # Atenção: Vi que você tem um arquivo "senhas.py". 
