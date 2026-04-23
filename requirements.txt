@@ -1,9 +1,9 @@
-# Bibliotecas Principais (com versões estáveis)
+# Bibliotecas Principais
 streamlit>=1.31.0
 altair<5
 pandas
 numpy
-plotly==5.18.0
+plotly>=5.18.0
 
 # Conectores de Banco de Dados
 oracledb
@@ -13,11 +13,10 @@ python-dotenv
 # Manipulação de Excel
 openpyxl
 
-
 # --- SECURITY & AUTH ---
 streamlit-authenticator==0.3.2
 bcrypt==4.1.2
 
 # --- OBSERVABILITY & VALIDATION ---
-pydantic==2.6.1
+pydantic
 loguru==0.7.2
