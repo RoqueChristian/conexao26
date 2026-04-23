@@ -1,0 +1,47 @@
+# ==============================================================================
+# 1. AMBIENTE VIRTUAL E DEPENDÊNCIAS
+# ==============================================================================
+# O ambiente virtual é pesado e específico do sistema operacional (Windows/Linux)
+# Apenas o requirements.txt deve ser versionado.
+venv/
+env/
+.env/
+
+# ==============================================================================
+# 2. CREDENCIAIS E SEGURANÇA (CRÍTICO)
+# ==============================================================================
+# Arquivos que contêm senhas de banco de dados, hashes de login e cookies.
+.streamlit/secrets.toml
+.streamlit/config_auth.yaml
+.env
+
+# Atenção: Vi que você tem um arquivo "senhas.py". 
+# Se ele contiver senhas reais em texto claro, ele DEVE ser ignorado.
+senhas.py
+debug_db.py
+app.py
+extrator.py
+
+# ==============================================================================
+# 3. DADOS LOCAIS (DATA GOVERNANCE)
+# ==============================================================================
+# Evita o vazamento de dados de faturamento, CNPJs e nomes de clientes no Git.
+# O repositório guarda o código que gera os dados, não os dados em si.
+# *.csv
+# base_chegadas.csv
+# base_compras.csv
+# base_fornecedores.csv
+# base_global_metas.csv
+# base_ociosos.csv
+
+# ==============================================================================
+# 4. CACHE E ARQUIVOS DE SISTEMA (PYTHON)
+# ==============================================================================
+# Arquivos compilados automaticamente pelo Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Arquivos de sistema operacional (se você ou alguém do time usar Mac/Linux)
+.DS_Store
+Thumbs.db
