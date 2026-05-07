@@ -97,25 +97,87 @@ def formatar_moeda(valor):
 @st.cache_data
 def carregar_dados():
     try:
+        # 1. Carga das bases do Evento (PostgreSQL exportado)
         df_chegadas = pd.read_csv('base_chegadas.csv')
         df_compras = pd.read_csv('base_compras.csv')
         df_ociosos = pd.read_csv('base_ociosos.csv')
         df_forn = pd.read_csv('base_fornecedores.csv')
         df_global = pd.read_csv('base_global_metas.csv')
-        return df_chegadas, df_compras, df_ociosos, df_forn, df_global
+
+        # 2. Carga Segura do ERP (WinThor)
+        df_erp = pd.read_csv(
+            'dados_conexao_condicao_26.csv', 
+            sep=';', 
+            encoding='latin-1', 
+            on_bad_lines='warn'
+        )
+        
+        # =========================================================
+        # 3. DATA QUALITY: HIGIENIZAÇÃO DE CABEÇALHOS
+        # =========================================================
+        # Remove espaços nas pontas e destrói os caracteres invisíveis (BOM do Excel/Windows)
+        df_erp.columns = df_erp.columns.str.strip().str.replace('ï»¿', '').str.replace('\ufeff', '')
+        
+        # Trava de Segurança (Fail-Fast)
+        if 'CODFILIAL' not in df_erp.columns:
+            st.error("🚨 Erro de Schema: Coluna 'CODFILIAL' não encontrada no arquivo WinThor.")
+            st.warning(f"O Pandas enxergou estas colunas: {list(df_erp.columns)}")
+            st.info("Dica: Verifique se o arquivo está salvo com separador Ponto e Vírgula (;) e não Vírgula (,).")
+            st.stop()
+            
+        # =========================================================
+        # 4. ENRIQUECIMENTO GEOGRÁFICO
+        # =========================================================
+        # Dicionário de Tradução (Filial -> UF)
+        mapa_filiais = {
+            1: 'CE', 2: 'PI', 3: 'CE', 4: 'MA', 5: 'MA',
+            6: 'PI', 7: 'BA', 8: 'PE', 9: 'PE'
+        }
+        
+        # Converte a filial para numérico antes de mapear para garantir o "match"
+        df_erp['CODFILIAL'] = pd.to_numeric(df_erp['CODFILIAL'], errors='coerce').fillna(0).astype(int)
+        
+        # Traduz a filial para o Estado correspondente
+        df_erp['ESTADO'] = df_erp['CODFILIAL'].map(mapa_filiais)
+
+        # =========================================================
+        # 5. TRATAMENTO FINANCEIRO (Localização Numérica)
+        # =========================================================
+        # Passo A: Garante que é lido como texto e troca a vírgula (BR) pelo ponto (US)
+        df_erp['TOTAL_FATURADO'] = df_erp['TOTAL_FATURADO'].astype(str).str.replace(',', '.', regex=False)
+        df_erp['VALOR_DEVOLVIDO'] = df_erp['VALOR_DEVOLVIDO'].astype(str).str.replace(',', '.', regex=False)
+        
+        # Passo B: Converte para numérico de forma segura e preenche nulos com zero
+        df_erp['TOTAL_FATURADO'] = pd.to_numeric(df_erp['TOTAL_FATURADO'], errors='coerce').fillna(0)
+        df_erp['VALOR_DEVOLVIDO'] = pd.to_numeric(df_erp['VALOR_DEVOLVIDO'], errors='coerce').fillna(0)
+        
+        # Passo C: Cálculo do Faturamento Líquido
+        df_erp['FATURAMENTO_LIQUIDO'] = df_erp['TOTAL_FATURADO'] - df_erp['VALOR_DEVOLVIDO']
+        
+        # =========================================================
+        # 6. HIGIENIZAÇÃO DE CHAVES PRIMÁRIAS (Data Governance)
+        # =========================================================
+        # Garante que os IDs sejam lidos como números inteiros puros para o Join perfeito
+        df_erp['CNPJ_FORNECEDOR'] = pd.to_numeric(df_erp['CNPJ_FORNECEDOR'], errors='coerce').fillna(0).astype(int)
+        
+        # ✨ CORREÇÃO AQUI: Lendo a coluna correta da sua nova planilha
+        df_erp['COD_CLIENTE'] = pd.to_numeric(df_erp['COD_CLIENTE'], errors='coerce').fillna(0).astype(int) 
+        
+        df_forn['fornecedor_id'] = pd.to_numeric(df_forn['fornecedor_id'], errors='coerce').fillna(0).astype(int)
+
+        return df_chegadas, df_compras, df_ociosos, df_forn, df_global, df_erp
+        
     except FileNotFoundError:
-        st.error("Arquivos CSV não encontrados. Execute o extrator.py primeiro.")
+        st.error("Arquivos CSV não encontrados. Certifique-se de que todas as bases estão na mesma pasta do script.")
         st.stop()
 
-# Carregamento na Memória
-df_chegadas, df_compras, df_ociosos, df_rank, df_rank_global = carregar_dados()
+df_chegadas, df_compras, df_ociosos, df_rank, df_rank_global, df_erp = carregar_dados()
 
 # ==============================================================================
-# 3. MOTOR DE FILTROS GLOBAIS (SIDEBAR EM MEMÓRIA)
+# 3. MOTOR DE FILTROS GLOBAIS
 # ==============================================================================
 st.sidebar.header("🎯 Filtros Globais")
 
-# Coleta os estados das bases lidas em vez de consultar o banco
 estados_unicos = pd.concat([df_chegadas['estado'], df_ociosos['estado']]).dropna().unique()
 estados_unicos = sorted(list(estados_unicos))
 
@@ -126,19 +188,19 @@ estados_selecionados = st.sidebar.multiselect(
     help="Deixe vazio para visualizar todos os estados."
 )
 
-# Filtro via Pandas
-def aplicar_filtro_pandas(df, coluna='estado'):
+def aplicar_filtro_pandas(df, coluna):
     if not estados_selecionados or df.empty or coluna not in df.columns:
         return df
     return df[df[coluna].isin(estados_selecionados)]
 
-df_chegadas_filtrado = aplicar_filtro_pandas(df_chegadas)
-df_compras_filtrado = aplicar_filtro_pandas(df_compras)
-df_ociosos_filtrado = aplicar_filtro_pandas(df_ociosos)
-df_rank_filtrado = aplicar_filtro_pandas(df_rank)
+df_chegadas_filtrado = aplicar_filtro_pandas(df_chegadas, 'estado')
+df_compras_filtrado = aplicar_filtro_pandas(df_compras, 'estado')
+df_ociosos_filtrado = aplicar_filtro_pandas(df_ociosos, 'estado')
+df_rank_filtrado = aplicar_filtro_pandas(df_rank, 'estado')
+df_erp_filtrado = aplicar_filtro_pandas(df_erp, 'ESTADO')
 
 # ==============================================================================
-# 4. INTERFACE E DASHBOARDS (RENDERIZAÇÃO)
+# 4. INTERFACE E DASHBOARDS
 # ==============================================================================
 c_head, c_act = st.columns([5, 1])
 c_head.title("🚀 Command Center: Resultados Consolidados")
@@ -146,171 +208,205 @@ if c_act.button("🔄 Recarregar CSVs"):
     st.cache_data.clear() 
     st.rerun()
 
-t_chegadas, t_conversoes, t_ociosos, t_fornecedores, t_metas = st.tabs([
+t_chegadas, t_conversoes, t_ociosos, t_fornecedores, t_metas, t_auditoria, t_auditoria_clientes = st.tabs([
     "📥 Visão Geral (Chegadas)", 
     "✅ Clientes (Compraram)", 
     "⚠️ Oportunidades (Ociosos)", 
     "🏆 Fornecedores",
-    "🎯 Apuração de Metas" 
+    "🎯 Apuração de Metas",
+    "⚖️ Auditoria (ERP)",
+    "👥 Auditoria (Clientes)" 
 ])
 
-# --- ABA 1: VISÃO GERAL (CHEGADAS) ---
+# --- ABA 1: CHEGADAS ---
 with t_chegadas:
     if not df_chegadas_filtrado.empty:
         df_chegadas_filtrado['Tempo Decorrido'] = df_chegadas_filtrado['segundos'].apply(format_time)
-        
         m1, m2 = st.columns(2)
         m1.metric("Grupos Econômicos no Evento", len(df_chegadas_filtrado))
-        m2.metric("Total de Lojas (CNPJs) Presentes", df_chegadas_filtrado['qtd_lojas_presentes'].sum())
-        
-        st.dataframe(
-            df_chegadas_filtrado[['cod_cli_princ', 'estado', 'nome_grupo_representante', 'qtd_lojas_presentes', 'primeira_chegada', 'Tempo Decorrido']], 
-            use_container_width=True, hide_index=True,
-            column_config={
-                "cod_cli_princ": "Cód. Matriz", "estado": "Estado",
-                "nome_grupo_representante": "Grupo Econômico", "qtd_lojas_presentes": "Lojas no Evento",
-                "primeira_chegada": st.column_config.TimeColumn("Primeiro Check-in", format="HH:mm")
-            }
-        )
-    else:
-        st.info("Nenhum dado encontrado para os filtros selecionados.")
+        m2.metric("Total de Lojas Presentes", df_chegadas_filtrado['qtd_lojas_presentes'].sum())
+        st.dataframe(df_chegadas_filtrado[['cod_cli_princ', 'estado', 'nome_grupo_representante', 'qtd_lojas_presentes', 'primeira_chegada', 'Tempo Decorrido']], use_container_width=True, hide_index=True)
+    else: st.info("Nenhum dado encontrado.")
 
-# --- ABA 2: CLIENTES COM COMPRAS ---
+# --- ABA 2: COMPRAS ---
 with t_conversoes:
     if not df_compras_filtrado.empty:
         total_soma = df_compras_filtrado['total_comprado_grupo'].sum()
         st.metric("Volume Negociado Total", formatar_moeda(total_soma))
-        
         df_compras_filtrado['total_exibicao'] = df_compras_filtrado['total_comprado_grupo'].apply(formatar_moeda)
+        st.dataframe(df_compras_filtrado, use_container_width=True, hide_index=True, column_config={"total_comprado_grupo": None})
+    else: st.warning("Nenhum pedido processado.")
 
-        st.dataframe(
-            df_compras_filtrado, 
-            use_container_width=True, hide_index=True,
-            column_config={
-                "cod_cli_princ": "Cód. Matriz", "estado": "Estado",
-                "nome_grupo_representante": "Grupo Econômico", "qtd_fornecedores": st.column_config.NumberColumn("Qtd. Fornecedores", format="%d"), 
-                "total_exibicao": "Total Comprado", "fornecedores_visitados": "Fornecedores Listados",
-                "total_comprado_grupo": None
-            }
-        )
-    else:
-        st.warning("Nenhum pedido processado para os filtros selecionados.")
-
-# --- ABA 3: MAPA DE OPORTUNIDADES (OCIOSOS) ---
+# --- ABA 3: OCIOSOS ---
 with t_ociosos:
-    st.markdown("### 🔥 Foco Comercial: Grupos sem pedido faturado")
     if not df_ociosos_filtrado.empty:
         df_ociosos_filtrado['Tempo sem comprar'] = df_ociosos_filtrado['segundos'].apply(format_time)
         st.error(f"{len(df_ociosos_filtrado)} grupos econômicos ociosos.")
-        st.dataframe(
-            df_ociosos_filtrado[['cod_cli_princ', 'estado', 'nome_grupo', 'hora_chegada', 'Tempo sem comprar']], 
-            use_container_width=True, hide_index=True,
-            column_config={
-                "cod_cli_princ": "Cód. Matriz", "estado": "Estado",
-                "nome_grupo": "Grupo Econômico", "hora_chegada": st.column_config.TimeColumn("Hora de Chegada", format="HH:mm")
-            }
-        )
-    else:
-        st.success("100% de conversão (ou nenhum grupo ocioso para este estado)!")
+        st.dataframe(df_ociosos_filtrado[['cod_cli_princ', 'estado', 'nome_grupo', 'hora_chegada', 'Tempo sem comprar']], use_container_width=True, hide_index=True)
+    else: st.success("100% de conversão!")
 
-# --- ABA 4: RANKING DE FORNECEDORES ---
+# --- ABA 4: FORNECEDORES ---
 with t_fornecedores:
     if not df_rank_filtrado.empty:
         c_chart, c_table = st.columns([1, 1])
-        
         with c_chart:
-            df_grafico = df_rank_filtrado.groupby(['fornecedor'], as_index=False)['faturamento_total'].sum()
-            df_grafico = df_grafico.sort_values(by='faturamento_total', ascending=False)
-            
-            fig = px.bar(
-                df_grafico, x='fornecedor', y='faturamento_total', 
-                text_auto='.2s', title="Faturamento Consolidado por Parceiro",
-                color='faturamento_total', color_continuous_scale='Blues'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
+            df_g = df_rank_filtrado.groupby(['fornecedor'], as_index=False)['faturamento_total'].sum().sort_values(by='faturamento_total', ascending=False)
+            st.plotly_chart(px.bar(df_g, x='fornecedor', y='faturamento_total', title="Faturamento por Parceiro", color='faturamento_total', color_continuous_scale='Blues'), use_container_width=True)
         with c_table:
-            st.markdown("### Faturamento Detalhado (UF)")
             df_rank_filtrado['faturamento_exibicao'] = df_rank_filtrado['faturamento_total'].apply(formatar_moeda)
-            st.dataframe(
-                df_rank_filtrado, 
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "fornecedor_id": None, "fornecedor": "Parceiro", "estado": "UF", 
-                    "faturamento_total": None, "faturamento_exibicao": "Faturamento", 
-                    "grupos_atingidos": "Grupos Convertidos"
-                }
-            )
-    else:
-        st.info("Aguardando negócios para compor o ranking.")
+            st.dataframe(df_rank_filtrado, use_container_width=True, hide_index=True, column_config={"faturamento_total": None, "fornecedor_id": None})
+    else: st.info("Aguardando negócios.")
 
-# --- ABA 5: APURAÇÃO DE METAS ---
+# --- ABA 5: METAS ---
 with t_metas:
-    st.markdown("### 🎯 Tracking de Atingimento Global por Fornecedor")
+    st.markdown("### 🎯 Tracking de Atingimento Global")
     df_metas = pd.DataFrame(meta_fornecedor)
-    
     if not df_rank_global.empty:
-        # 1. OUTER JOIN: Traz quem tem meta e quem não tem, mas vendeu
         df_apuracao = pd.merge(df_metas, df_rank_global, on='fornecedor_id', how='outer')
-        
-        # 2. Resgate de Nome: Traz o nome fantasia para os fornecedores que não estavam no dicionário
         mapa_nomes = df_rank[['fornecedor_id', 'fornecedor']].drop_duplicates().set_index('fornecedor_id')['fornecedor']
         df_apuracao['nome_fantasia'] = df_apuracao['nome_fantasia'].fillna(df_apuracao['fornecedor_id'].map(mapa_nomes))
-        
-        # 3. Tratamento de Nulos (Realizado)
         df_apuracao['faturamento_total'] = df_apuracao['faturamento_total'].fillna(0)
-        
-        # 4. Cálculos Financeiros (Individual)
         df_apuracao['pct_atingido'] = (df_apuracao['faturamento_total'] / df_apuracao['valor_meta']) * 100
         df_apuracao['gap'] = df_apuracao['valor_meta'] - df_apuracao['faturamento_total']
         df_apuracao['gap'] = df_apuracao['gap'].apply(lambda x: 0 if pd.notna(x) and x < 0 else x)
         
-        # 5. Formatação Condicional de Strings
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Meta Global", formatar_moeda(df_apuracao['valor_meta'].sum()))
+        m2.metric("Realizado Geral", formatar_moeda(df_apuracao['faturamento_total'].sum()))
+        m3.metric("Atingimento", f"{(df_apuracao['faturamento_total'].sum()/df_apuracao['valor_meta'].sum()*100):.1f}%")
+        
         df_apuracao['Meta_Str'] = df_apuracao['valor_meta'].apply(lambda x: formatar_moeda(x) if pd.notna(x) else "-")
         df_apuracao['Realizado_Str'] = df_apuracao['faturamento_total'].apply(formatar_moeda)
         df_apuracao['Falta_Str'] = df_apuracao['gap'].apply(lambda x: formatar_moeda(x) if pd.notna(x) else "-")
-        
-        # 6. Ordenação
         df_apuracao['ordem_pct'] = df_apuracao['pct_atingido'].fillna(-1)
         df_apuracao = df_apuracao.sort_values(by=['ordem_pct', 'faturamento_total'], ascending=[False, False])
-        df_apuracao['pct_atingido'] = df_apuracao['pct_atingido'].apply(lambda x: x if pd.notna(x) else None)
         
-        # =========================================================
-        # 7. KPIs GLOBAIS (ATUALIZADOS)
-        # =========================================================
-        # A Meta Total soma apenas os valores preenchidos no dicionário
-        meta_total = df_apuracao['valor_meta'].sum()
+        st.dataframe(df_apuracao, use_container_width=True, hide_index=True, column_config={"nome_fantasia": "Parceiro", "Meta_Str": "Meta", "Realizado_Str": "Realizado", "pct_atingido": st.column_config.ProgressColumn("%", format="%.1f%%", min_value=0, max_value=100), "Falta_Str": "Gap", "fornecedor_id": None, "fornecedor": None, "valor_meta": None, "faturamento_total": None, "gap": None, "ordem_pct": None})
+
+# --- ABA 6: AUDITORIA ---
+with t_auditoria:
+    st.markdown("### ⚖️ Reconciliação Financeira: Evento vs. WinThor")
+    if not df_erp_filtrado.empty and not df_rank_filtrado.empty:
         
-        # O Realizado Total agora soma 100% das vendas da feira
-        realizado_total = df_apuracao['faturamento_total'].sum()
+        df_evento_audit = df_rank_filtrado.groupby('fornecedor_id', as_index=False).agg({'fornecedor': 'first', 'faturamento_total': 'sum'})
+        df_winthor_audit = df_erp_filtrado.groupby('CNPJ_FORNECEDOR', as_index=False).agg({'FORNECEDOR': 'first', 'TOTAL_FATURADO': 'sum', 'VALOR_DEVOLVIDO': 'sum', 'FATURAMENTO_LIQUIDO': 'sum'})
+        df_winthor_audit.rename(columns={'CNPJ_FORNECEDOR': 'fornecedor_id'}, inplace=True)
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Meta Global do Evento", formatar_moeda(meta_total))
-        m2.metric("Faturamento Realizado (Geral)", formatar_moeda(realizado_total))
+        df_audit = pd.merge(df_evento_audit, df_winthor_audit, on='fornecedor_id', how='outer')
         
-        # O percentual global reflete o esforço de todos contra o bolsão de metas
-        pct_global = (realizado_total / meta_total) * 100 if meta_total > 0 else 0
-        m3.metric("Atingimento Global", f"{pct_global:.1f}%")
-        # =========================================================
+        # ✨ CORREÇÃO APLICADA AQUI: Tratamento explícito apenas nas colunas numéricas
+        df_audit.fillna({
+            'faturamento_total': 0, 
+            'TOTAL_FATURADO': 0, 
+            'VALOR_DEVOLVIDO': 0, 
+            'FATURAMENTO_LIQUIDO': 0
+        }, inplace=True)
         
-        st.divider()
-        altura_tabela = (len(df_apuracao) + 1) * 35 + 10
+        # Consolida o nome do Parceiro
+        df_audit['Parceiro'] = df_audit['fornecedor'].fillna(df_audit['FORNECEDOR'])
+        
+        # Cálculos de Auditoria
+        df_audit['Quebra'] = df_audit['faturamento_total'] - df_audit['FATURAMENTO_LIQUIDO']
+        df_audit['Taxa'] = (df_audit['FATURAMENTO_LIQUIDO'] / df_audit['faturamento_total'] * 100).replace([float('inf')], 100).fillna(0)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Pedidos Evento", formatar_moeda(df_audit['faturamento_total'].sum()))
+        c2.metric("Faturado WinThor", formatar_moeda(df_audit['FATURAMENTO_LIQUIDO'].sum()))
+        c3.metric("Conversão", f"{(df_audit['FATURAMENTO_LIQUIDO'].sum()/df_audit['faturamento_total'].sum()*100):.1f}%")
+
+        df_audit['P_Ev'] = df_audit['faturamento_total'].apply(formatar_moeda)
+        df_audit['W_Liq'] = df_audit['FATURAMENTO_LIQUIDO'].apply(formatar_moeda)
+        df_audit['Gap'] = df_audit['Quebra'].apply(formatar_moeda)
         
         st.dataframe(
-            df_apuracao,
-            use_container_width=True, hide_index=True, height=altura_tabela,
+            df_audit.sort_values(by='faturamento_total', ascending=False), 
+            use_container_width=True, hide_index=True, 
             column_config={
-                "fornecedor_id": None, "fornecedor": None, "valor_meta": None,
-                "faturamento_total": None, "gap": None, "grupos_atingidos": None,
-                "ordem_pct": None, 
-                "nome_fantasia": st.column_config.TextColumn("Parceiro Estratégico", width="medium"),
-                "Meta_Str": "Meta (R$)", "Realizado_Str": "Realizado (R$)",
-                "pct_atingido": st.column_config.ProgressColumn(
-                    "% Atingido", help="Progresso rumo ao atingimento global",
-                    format="%.1f%%", min_value=0, max_value=100
-                ),
-                "Falta_Str": "Gap p/ Meta (R$)"
+                "fornecedor_id": "ID", "Parceiro": "Parceiro", 
+                "P_Ev": "Evento", "W_Liq": "WinThor", "Gap": "Quebra", 
+                "Taxa": st.column_config.ProgressColumn("Conversão", format="%.1f%%", min_value=0, max_value=100), 
+                "fornecedor": None, "FORNECEDOR": None, "faturamento_total": None, 
+                "TOTAL_FATURADO": None, "VALOR_DEVOLVIDO": None, "FATURAMENTO_LIQUIDO": None, "Quebra": None
+            }
+        )
+    else: 
+        st.info("Dados ERP não disponíveis.")
+
+
+# --- ABA 7: AUDITORIA DETALHADA POR CLIENTE ---
+with t_auditoria_clientes:
+    st.markdown("### 👥 Auditoria de Conversão por Grupo Econômico")
+    
+    if not df_erp_filtrado.empty and not df_compras_filtrado.empty:
+        # 1. Base Evento
+        df_ev = df_compras_filtrado.groupby('cod_cli_princ', as_index=False).agg({
+            'nome_grupo_representante': 'first',
+            'estado': 'first',
+            'total_comprado_grupo': 'sum'
+        })
+        df_ev['cod_cli_princ'] = pd.to_numeric(df_ev['cod_cli_princ'], errors='coerce').fillna(0).astype(int)
+
+        # 2. Base WinThor (Agrupando por COD_CLIENTE)
+        df_wt = df_erp_filtrado.groupby('COD_CLIENTE', as_index=False).agg({
+            'CLIENTE': 'first',
+            'FATURAMENTO_LIQUIDO': 'sum',
+            'CNPJ_FORNECEDOR': 'nunique',
+            'CODFILIAL': 'first'
+        })
+        df_wt.rename(columns={'COD_CLIENTE': 'cod_cli_princ'}, inplace=True)
+        df_wt['cod_cli_princ'] = pd.to_numeric(df_wt['cod_cli_princ'], errors='coerce').fillna(0).astype(int)
+
+        # 3. Join Final
+        df_final = pd.merge(df_ev, df_wt, on='cod_cli_princ', how='outer')
+        df_final = df_final[df_final['cod_cli_princ'] != 0]
+
+        # 4. Tratamento e Nome Final
+        df_final.fillna({'total_comprado_grupo': 0, 'FATURAMENTO_LIQUIDO': 0, 'CNPJ_FORNECEDOR': 0}, inplace=True)
+        
+        # ✨ RESGATE DO NOME: Prioriza o nome do evento, se não houver, pega o do WinThor
+        df_final['Nome_Final'] = df_final['nome_grupo_representante'].fillna(df_final['CLIENTE']).str.upper()
+        
+        df_final['Taxa'] = (df_final['FATURAMENTO_LIQUIDO'] / df_final['total_comprado_grupo'] * 100).replace([float('inf')], 100).fillna(0)
+
+        # 5. KPIs de Topo
+        total_evento = df_final['total_comprado_grupo'].sum()
+        total_winthor = df_final['FATURAMENTO_LIQUIDO'].sum()
+        conversao_geral = (total_winthor / total_evento * 100) if total_evento > 0 else 0
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Venda Evento", formatar_moeda(total_evento))
+        c2.metric("Total Faturado WinThor", formatar_moeda(total_winthor))
+        c3.metric("Conversão Global da Carteira", f"{conversao_geral:.1f}%")
+
+        st.divider()
+
+        # 6. Preparação das Strings de Moeda
+        df_final['Ev_Str'] = df_final['total_comprado_grupo'].apply(formatar_moeda)
+        df_final['Wt_Str'] = df_final['FATURAMENTO_LIQUIDO'].apply(formatar_moeda)
+        
+        df_display = df_final.sort_values(by='total_comprado_grupo', ascending=False)
+
+        # 7. Exibição com o Nome do Cliente Ativado
+        st.dataframe(
+            df_display,
+            use_container_width=True, 
+            hide_index=True, 
+            column_config={
+                "cod_cli_princ": "Cód. Matriz",
+                "Nome_Final": st.column_config.TextColumn("Grupo Econômico", width="large"), 
+                "CNPJ_FORNECEDOR": st.column_config.NumberColumn("Qtd. Ind.", format="%d"),
+                "CODFILIAL": "Filial",
+                "Taxa": st.column_config.ProgressColumn("Aprovação", format="%.1f%%", min_value=0, max_value=100),
+                "Ev_Str": "Venda Evento",
+                "Wt_Str": "Faturamento WinThor",
+                
+                # Ocultando lixo técnico
+                "nome_grupo_representante": None,
+                "estado": None,
+                "CLIENTE": None,
+                "total_comprado_grupo": None,
+                "FATURAMENTO_LIQUIDO": None
             }
         )
     else:
-        st.info("Nenhum dado global disponível para apuração.")
+        st.info("Aguardando dados de faturamento para auditoria de clientes.")
